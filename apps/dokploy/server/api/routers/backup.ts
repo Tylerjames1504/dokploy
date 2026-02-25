@@ -96,6 +96,12 @@ const isArchiveStorageClass = (storageClass?: string | null) => {
 	return ARCHIVE_STORAGE_CLASSES.has(storageClass.toUpperCase());
 };
 
+const ARCHIVE_RESTORE_PRIORITY_MAP = {
+	standard: "Standard",
+	priority: "Expedited",
+	bulk: "Bulk",
+} as const;
+
 const validateStorageClassForDestination = async ({
 	destinationId,
 	storageClass,
@@ -502,6 +508,60 @@ export const backupRouter = createTRPCRouter({
 						error instanceof Error
 							? error.message
 							: "Error listing backup files",
+					cause: error,
+				});
+			}
+		}),
+	requestBackupFileRestore: protectedProcedure
+		.input(
+			z.object({
+				destinationId: z.string().min(1),
+				backupFile: z.string().min(1),
+				retrievalTier: z.enum(["standard", "priority", "bulk"]).default("standard"),
+				lifetimeDays: z.number().int().min(1).max(30).default(7),
+				serverId: z.string().optional(),
+			}),
+		)
+		.mutation(async ({ input }) => {
+			try {
+				const destination = await findDestinationById(input.destinationId);
+				const rcloneFlags = getS3Credentials(destination);
+				const bucketPath = `:s3:${destination.bucket}`;
+				const normalizedPath = input.backupFile.replace(/^\/+/, "");
+
+				if (normalizedPath.endsWith("/")) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Please select a backup file, not a directory.",
+					});
+				}
+
+				const lastSlashIndex = normalizedPath.lastIndexOf("/");
+				const parentDirectory =
+					lastSlashIndex === -1 ? "" : normalizedPath.slice(0, lastSlashIndex + 1);
+				const restoreTarget = parentDirectory
+					? `${bucketPath}/${normalizeS3Path(parentDirectory)}`
+					: bucketPath;
+				const priority = ARCHIVE_RESTORE_PRIORITY_MAP[input.retrievalTier];
+				const restoreCommand = `rclone backend restore ${rcloneFlags.join(" ")} "${restoreTarget}" -o priority=${priority} -o lifetime=${input.lifetimeDays}`;
+
+				if (input.serverId) {
+					await execAsyncRemote(input.serverId, restoreCommand);
+				} else {
+					await execAsync(restoreCommand);
+				}
+
+				return {
+					success: true,
+					message: `Archive restore requested for directory with ${input.retrievalTier} priority.`,
+				};
+			} catch (error) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message:
+						error instanceof Error
+							? error.message
+							: "Failed to request archive restore.",
 					cause: error,
 				});
 			}

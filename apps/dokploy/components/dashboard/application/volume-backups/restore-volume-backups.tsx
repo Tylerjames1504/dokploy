@@ -1,7 +1,14 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { useMutation } from "@tanstack/react-query";
 import copy from "copy-to-clipboard";
 import { debounce } from "lodash";
-import { CheckIcon, ChevronsUpDown, Copy, RotateCcw } from "lucide-react";
+import {
+	CheckIcon,
+	ChevronsUpDown,
+	Copy,
+	InfoIcon,
+	RotateCcw,
+} from "lucide-react";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -41,6 +48,19 @@ import {
 	PopoverTrigger,
 } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { api, type RouterOutputs } from "@/utils/api";
 import { formatBytes } from "../../database/backups/restore-backup";
@@ -126,7 +146,11 @@ export const RestoreVolumeBackups = ({ id, type, serverId }: Props) => {
 		debouncedSetSearch(value);
 	};
 
-	const { data: filesData = [], isLoading } = api.backup.listBackupFiles.useQuery(
+	const {
+		data: filesData = [],
+		isLoading,
+		refetch: refetchFiles,
+	} = api.backup.listBackupFiles.useQuery(
 		{
 			destinationId: destinationId,
 			search: debouncedSearchTerm,
@@ -141,6 +165,10 @@ export const RestoreVolumeBackups = ({ id, type, serverId }: Props) => {
 	const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 	const [filteredLogs, setFilteredLogs] = useState<LogLine[]>([]);
 	const [isDeploying, setIsDeploying] = useState(false);
+	const [archiveRetrievalTier, setArchiveRetrievalTier] = useState<
+		"standard" | "priority" | "bulk"
+	>("standard");
+	const [archiveLifetimeDays, setArchiveLifetimeDays] = useState("7");
 	const selectedFile = files.find((file) => file.Path === backupFile);
 	const isSelectedFileRestorable =
 		selectedFile && !selectedFile.IsDir
@@ -176,6 +204,28 @@ export const RestoreVolumeBackups = ({ id, type, serverId }: Props) => {
 			},
 		},
 	);
+
+	const trpcUtils = api.useUtils();
+	const requestArchiveRestore = useMutation({
+		mutationFn: (input: {
+			destinationId: string;
+			backupFile: string;
+			retrievalTier: "standard" | "priority" | "bulk";
+			lifetimeDays: number;
+			serverId?: string;
+		}) =>
+			trpcUtils.client.mutation(
+				"backup.requestBackupFileRestore" as never,
+				input as never,
+			),
+		onSuccess(data) {
+			toast.success((data as { message?: string })?.message ?? "Restore requested.");
+			void refetchFiles();
+		},
+		onError(error) {
+			toast.error(error instanceof Error ? error.message : "Failed to request restore");
+		},
+	});
 
 	const onSubmit = async () => {
 		setIsDeploying(true);
@@ -431,10 +481,81 @@ export const RestoreVolumeBackups = ({ id, type, serverId }: Props) => {
 							</Button>
 						</DialogFooter>
 						{selectedFile?.RestoreAvailability === "archived" && (
-							<p className="text-xs text-destructive">
-								This backup is archived and not readable yet. Request a restore in
-								S3 first.
-							</p>
+							<div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
+								<div className="mb-2 flex items-center gap-1 text-xs font-medium text-destructive">
+									<span>Archived backup file</span>
+									<TooltipProvider>
+										<Tooltip delayDuration={0}>
+											<TooltipTrigger>
+												<InfoIcon className="h-4 w-4 text-muted-foreground" />
+											</TooltipTrigger>
+											<TooltipContent className="max-w-xs">
+												This backup is in archive storage and cannot be
+												downloaded until restore is requested. Retrieval speed:
+												Standard is typical, Priority is fastest, Bulk is
+												lowest-cost but slowest. Lifetime controls how long the
+												object stays readable after restore completes.
+											</TooltipContent>
+										</Tooltip>
+									</TooltipProvider>
+								</div>
+								<p className="mb-2 text-xs text-muted-foreground">
+									Request restore to make this backup temporarily readable.
+								</p>
+								<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+									<Select
+										value={archiveRetrievalTier}
+										onValueChange={(value: "standard" | "priority" | "bulk") =>
+											setArchiveRetrievalTier(value)
+										}
+									>
+										<SelectTrigger className="h-8 w-full sm:w-36">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											<SelectItem value="standard">Standard</SelectItem>
+											<SelectItem value="priority">Priority</SelectItem>
+											<SelectItem value="bulk">Bulk</SelectItem>
+										</SelectContent>
+									</Select>
+									<Select
+										value={archiveLifetimeDays}
+										onValueChange={setArchiveLifetimeDays}
+									>
+										<SelectTrigger className="h-8 w-full sm:w-32">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											<SelectItem value="1">1 day</SelectItem>
+											<SelectItem value="3">3 days</SelectItem>
+											<SelectItem value="7">7 days</SelectItem>
+											<SelectItem value="14">14 days</SelectItem>
+											<SelectItem value="30">30 days</SelectItem>
+										</SelectContent>
+									</Select>
+									<Button
+										type="button"
+										variant="secondary"
+										className="h-8 sm:w-auto"
+										isLoading={requestArchiveRestore.isPending}
+										onClick={() => {
+											if (!selectedFile) return;
+											requestArchiveRestore.mutate({
+												destinationId,
+												backupFile: selectedFile.Path,
+												retrievalTier: archiveRetrievalTier,
+												lifetimeDays: Number.parseInt(archiveLifetimeDays, 10),
+												serverId: serverId ?? undefined,
+											});
+										}}
+									>
+										Request Restore
+									</Button>
+								</div>
+								<p className="mt-2 text-xs text-destructive">
+									This object is archived and not readable yet.
+								</p>
+							</div>
 						)}
 						{selectedFile?.RestoreAvailability === "restoring" && (
 							<p className="text-xs text-muted-foreground">
