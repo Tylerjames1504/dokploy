@@ -65,11 +65,36 @@ interface RcloneFile {
 	Size: number;
 	IsDir: boolean;
 	Tier?: string;
+	StorageClass?: string;
+	RestoreAvailability?: "ready" | "restoring" | "archived" | "unknown";
+	RestoreExpiryDate?: string | null;
 	Hashes?: {
 		MD5?: string;
 		SHA1?: string;
 	};
 }
+
+interface RcloneRestoreStatusEntry {
+	Remote?: string;
+	StorageClass?: string;
+	RestoreStatus?: {
+		IsRestoreInProgress?: boolean;
+		RestoreExpiryDate?: string | null;
+	} | null;
+}
+
+const ARCHIVE_STORAGE_CLASSES = new Set([
+	"GLACIER",
+	"DEEP_ARCHIVE",
+	"ARCHIVE",
+]);
+
+const isArchiveStorageClass = (storageClass?: string | null) => {
+	if (!storageClass) {
+		return false;
+	}
+	return ARCHIVE_STORAGE_CLASSES.has(storageClass.toUpperCase());
+};
 
 const validateStorageClassForDestination = async ({
 	destinationId,
@@ -359,15 +384,32 @@ export const backupRouter = createTRPCRouter({
 
 				const searchPath = baseDir ? `${bucketPath}/${baseDir}` : bucketPath;
 				const listCommand = `rclone lsjson ${rcloneFlags.join(" ")} "${searchPath}" --no-mimetype --no-modtime 2>/dev/null`;
+				const restoreStatusCommand = `rclone backend restore-status ${rcloneFlags.join(" ")} "${searchPath}" 2>/dev/null`;
 
 				let stdout = "";
+				let restoreStatusStdout = "";
 
 				if (input.serverId) {
 					const result = await execAsyncRemote(input.serverId, listCommand);
 					stdout = result.stdout;
+					try {
+						const restoreStatusResult = await execAsyncRemote(
+							input.serverId,
+							restoreStatusCommand,
+						);
+						restoreStatusStdout = restoreStatusResult.stdout;
+					} catch (error) {
+						console.warn("restore-status failed:", error);
+					}
 				} else {
 					const result = await execAsync(listCommand);
 					stdout = result.stdout;
+					try {
+						const restoreStatusResult = await execAsync(restoreStatusCommand);
+						restoreStatusStdout = restoreStatusResult.stdout;
+					} catch (error) {
+						console.warn("restore-status failed:", error);
+					}
 				}
 
 				let files: RcloneFile[] = [];
@@ -379,14 +421,69 @@ export const backupRouter = createTRPCRouter({
 					throw new Error("Failed to parse backup files list");
 				}
 
+				let restoreStatusEntries: RcloneRestoreStatusEntry[] = [];
+				if (restoreStatusStdout) {
+					try {
+						const parsed = JSON.parse(
+							restoreStatusStdout,
+						) as RcloneRestoreStatusEntry[];
+						restoreStatusEntries = Array.isArray(parsed) ? parsed : [];
+					} catch (error) {
+						console.warn("Failed to parse restore-status response:", error);
+					}
+				}
+
+				const restoreStatusMap = new Map<string, RcloneRestoreStatusEntry>();
+				for (const entry of restoreStatusEntries) {
+					const remote = entry.Remote?.replace(/\/$/, "");
+					if (!remote) {
+						continue;
+					}
+					restoreStatusMap.set(remote, entry);
+				}
+
 				// Limit to first 100 files
 
-				const results = baseDir
+				const results = (baseDir
 					? files.map((file) => ({
 							...file,
 							Path: `${baseDir}${file.Path}`,
 						}))
-					: files;
+					: files
+				).map((file) => {
+					const relativePath = baseDir
+						? file.Path.slice(baseDir.length)
+						: file.Path;
+					const normalizedRelativePath = relativePath.replace(/\/$/, "");
+					const restoreStatus = restoreStatusMap.get(normalizedRelativePath);
+					const storageClass = file.Tier || file.StorageClass || restoreStatus?.StorageClass;
+					const isArchive = isArchiveStorageClass(storageClass);
+					const inProgress =
+						restoreStatus?.RestoreStatus?.IsRestoreInProgress === true;
+					const restored =
+						restoreStatus?.RestoreStatus?.IsRestoreInProgress === false;
+
+					let restoreAvailability: RcloneFile["RestoreAvailability"] = "unknown";
+					if (file.IsDir) {
+						restoreAvailability = "unknown";
+					} else if (inProgress) {
+						restoreAvailability = "restoring";
+					} else if (restored) {
+						restoreAvailability = "ready";
+					} else if (isArchive) {
+						restoreAvailability = "archived";
+					} else {
+						restoreAvailability = "ready";
+					}
+
+					return {
+						...file,
+						StorageClass: storageClass,
+						RestoreAvailability: restoreAvailability,
+						RestoreExpiryDate:
+							restoreStatus?.RestoreStatus?.RestoreExpiryDate ?? null,
+					};
+				});
 
 				if (searchTerm) {
 					return results

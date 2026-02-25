@@ -61,7 +61,7 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { api } from "@/utils/api";
+import { api, type RouterOutputs } from "@/utils/api";
 import type { ServiceType } from "../../application/advanced/show-resources";
 import { type LogLine, parseLogs } from "../../docker/logs/utils";
 
@@ -75,6 +75,12 @@ interface Props {
 	serverId?: string | null;
 	backupType?: "database" | "compose";
 }
+
+type BackupFileListItem = RouterOutputs["backup"]["listBackupFiles"][number] & {
+	RestoreAvailability?: "ready" | "restoring" | "archived" | "unknown";
+	StorageClass?: string;
+	RestoreExpiryDate?: string | null;
+};
 
 const RestoreBackupSchema = z
 	.object({
@@ -207,6 +213,21 @@ export const formatBytes = (bytes: number): string => {
 	return `${Number.parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
 };
 
+const getAvailabilityBadge = (
+	availability?: "ready" | "restoring" | "archived" | "unknown",
+) => {
+	if (availability === "ready") {
+		return <Badge variant="default">Ready</Badge>;
+	}
+	if (availability === "restoring") {
+		return <Badge variant="secondary">Restoring</Badge>;
+	}
+	if (availability === "archived") {
+		return <Badge variant="destructive">Archived</Badge>;
+	}
+	return <Badge variant="outline">Unknown</Badge>;
+};
+
 export const RestoreBackup = ({
 	id,
 	databaseType,
@@ -245,7 +266,7 @@ export const RestoreBackup = ({
 		debouncedSetSearch(value);
 	};
 
-	const { data: files = [], isLoading } = api.backup.listBackupFiles.useQuery(
+	const { data: filesData = [], isLoading } = api.backup.listBackupFiles.useQuery(
 		{
 			destinationId: destionationId,
 			search: debouncedSearchTerm,
@@ -255,6 +276,7 @@ export const RestoreBackup = ({
 			enabled: isOpen && !!destionationId,
 		},
 	);
+	const files = filesData as BackupFileListItem[];
 
 	const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 	const [filteredLogs, setFilteredLogs] = useState<LogLine[]>([]);
@@ -315,6 +337,15 @@ export const RestoreBackup = ({
 			enabled: backupType === "compose",
 		},
 	);
+
+	const selectedFile = files.find(
+		(file) => file.Path === form.watch("backupFile"),
+	);
+	const isSelectedFileRestorable =
+		selectedFile && !selectedFile.IsDir
+			? selectedFile.RestoreAvailability === "ready" ||
+				selectedFile.RestoreAvailability === "unknown"
+			: true;
 
 	return (
 		<Dialog open={isOpen} onOpenChange={setIsOpen}>
@@ -435,11 +466,11 @@ export const RestoreBackup = ({
 												<Button
 													variant="outline"
 													className={cn(
-														"w-full justify-between !bg-input",
+														"h-10 w-full justify-between !bg-input",
 														!field.value && "text-muted-foreground",
 													)}
 												>
-													<span className="truncate text-left flex-1 w-52">
+													<span className="block flex-1 truncate whitespace-nowrap text-left">
 														{field.value || "Search and select a backup file"}
 													</span>
 													<ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
@@ -504,8 +535,12 @@ export const RestoreBackup = ({
 																				Size: {formatBytes(file.Size)}
 																			</span>
 																			{file.Tier && (
-																				<span>Tier: {file.Tier}</span>
+																				<span>Class: {file.Tier}</span>
 																			)}
+																			{!file.IsDir &&
+																				getAvailabilityBadge(
+																					file.RestoreAvailability,
+																				)}
 																			{file.IsDir && (
 																				<span className="text-blue-500">
 																					Directory
@@ -513,6 +548,14 @@ export const RestoreBackup = ({
 																			)}
 																			{file.Hashes?.MD5 && (
 																				<span>MD5: {file.Hashes.MD5}</span>
+																			)}
+																			{file.RestoreExpiryDate && (
+																				<span>
+																					Readable until:{" "}
+																					{new Date(
+																						file.RestoreExpiryDate,
+																					).toLocaleString()}
+																				</span>
 																			)}
 																		</div>
 																	</div>
@@ -796,14 +839,27 @@ export const RestoreBackup = ({
 								isLoading={isDeploying}
 								form="hook-form-restore-backup"
 								type="submit"
-								// disabled={
-								// 	!form.watch("backupFile") ||
-								// 	(backupType === "compose" && !form.watch("databaseType"))
-								// }
+								disabled={
+									!form.watch("backupFile") ||
+									!isSelectedFileRestorable ||
+									(backupType === "compose" && !form.watch("databaseType"))
+								}
 							>
 								Restore
 							</Button>
 						</DialogFooter>
+						{selectedFile?.RestoreAvailability === "archived" && (
+							<p className="text-xs text-destructive">
+								This backup is archived and not readable yet. Request a restore
+								in S3 first.
+							</p>
+						)}
+						{selectedFile?.RestoreAvailability === "restoring" && (
+							<p className="text-xs text-muted-foreground">
+								This backup is being restored from archive and is not readable
+								yet.
+							</p>
+						)}
 					</form>
 				</Form>
 
