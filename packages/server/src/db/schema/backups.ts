@@ -168,11 +168,9 @@ export const apiCreateBackup = createSchema.pick({
 	storageClass: true,
 });
 
-export const apiFindOneBackup = createSchema
-	.pick({
-		backupId: true,
-	})
-	.required();
+export const apiFindOneBackup = z.object({
+	backupId: z.string().min(1),
+});
 
 export const apiRemoveBackup = createSchema
 	.pick({
