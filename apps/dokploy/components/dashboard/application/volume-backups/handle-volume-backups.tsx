@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
+import { getS3StorageClassOptionsByProvider } from "../../database/backups/constants";
 import type { CacheType } from "../domains/handle-domain";
 import { ScheduleFormField } from "../schedules/handle-schedules";
 
@@ -74,6 +75,7 @@ const formSchema = z
 		]),
 		serviceName: z.string(),
 		destinationId: z.string().min(1, "Destination required"),
+		storageClass: z.string().optional(),
 	})
 	.superRefine((data, ctx) => {
 		if (data.serviceType === "compose" && !data.serviceName) {
@@ -128,6 +130,7 @@ export const HandleVolumeBackups = ({
 			enabled: true,
 			serviceName: "",
 			serviceType: volumeBackupType,
+			storageClass: "",
 		},
 	});
 
@@ -161,6 +164,21 @@ export const HandleVolumeBackups = ({
 	);
 
 	const serviceName = form.watch("serviceName");
+	const destinationId = form.watch("destinationId");
+	const storageClass = form.watch("storageClass");
+	const selectedDestination = destinations?.find(
+		(destination) => destination.destinationId === destinationId,
+	);
+	const storageClassOptions = getS3StorageClassOptionsByProvider(
+		selectedDestination?.provider,
+	);
+	const hasStorageClassSupport = storageClassOptions.length > 0;
+
+	useEffect(() => {
+		if (storageClass && !storageClassOptions.includes(storageClass)) {
+			form.setValue("storageClass", "");
+		}
+	}, [form, storageClass, storageClassOptions]);
 
 	const { data: mountsByService } = api.compose.loadMountsByService.useQuery(
 		{
@@ -185,6 +203,7 @@ export const HandleVolumeBackups = ({
 				serviceName: volumeBackup.serviceName || "",
 				destinationId: volumeBackup.destinationId,
 				serviceType: volumeBackup.serviceType,
+				storageClass: volumeBackup.storageClass || "",
 			});
 			setKeepLatestCountInput(
 				volumeBackup.keepLatestCount !== null &&
@@ -211,6 +230,7 @@ export const HandleVolumeBackups = ({
 			destinationId: values.destinationId,
 			volumeBackupId: volumeBackupId || "",
 			serviceType: volumeBackupType,
+			storageClass: values.storageClass?.trim() || undefined,
 			...(volumeBackupType === "application" && {
 				applicationId: id || "",
 			}),
@@ -340,6 +360,54 @@ export const HandleVolumeBackups = ({
 									<FormDescription>
 										Choose the backup destination where files will be stored
 									</FormDescription>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
+							name="storageClass"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Storage Class</FormLabel>
+									<Select
+										onValueChange={(value) =>
+											field.onChange(value === "__DEFAULT__" ? "" : value)
+										}
+										value={field.value || "__DEFAULT__"}
+										defaultValue={field.value || "__DEFAULT__"}
+										disabled={!selectedDestination || !hasStorageClassSupport}
+									>
+										<FormControl>
+											<SelectTrigger>
+												<SelectValue
+													placeholder={
+														!selectedDestination
+															? "Select destination first"
+															: hasStorageClassSupport
+																? "Use destination default"
+																: "Not supported for this provider"
+													}
+												/>
+											</SelectTrigger>
+										</FormControl>
+										<SelectContent>
+											<SelectItem value="__DEFAULT__">
+												Use destination default
+											</SelectItem>
+											{storageClassOptions.map((option) => (
+												<SelectItem key={option} value={option}>
+													{option}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+									{selectedDestination && !hasStorageClassSupport && (
+										<FormDescription>
+											This destination provider does not support explicit
+											storage-class overrides.
+										</FormDescription>
+									)}
 									<FormMessage />
 								</FormItem>
 							)}

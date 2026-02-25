@@ -31,6 +31,10 @@ import {
 	normalizeS3Path,
 } from "@dokploy/server/utils/backups/utils";
 import {
+	getS3StorageClassesForProvider,
+	normalizeS3StorageClass,
+} from "@dokploy/server/utils/backups/s3-storage-class";
+import {
 	execAsync,
 	execAsyncRemote,
 } from "@dokploy/server/utils/process/execAsync";
@@ -67,11 +71,47 @@ interface RcloneFile {
 	};
 }
 
+const validateStorageClassForDestination = async ({
+	destinationId,
+	storageClass,
+}: {
+	destinationId: string;
+	storageClass?: string | null;
+}) => {
+	const normalizedStorageClass = normalizeS3StorageClass(storageClass);
+	if (!normalizedStorageClass) {
+		return;
+	}
+
+	const destination = await findDestinationById(destinationId);
+	const provider = destination.provider;
+	const supportedStorageClasses = getS3StorageClassesForProvider(provider);
+
+	if (supportedStorageClasses.length === 0) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `Storage class is not supported for provider "${provider || "Unknown"}".`,
+		});
+	}
+
+	if (!supportedStorageClasses.includes(normalizedStorageClass)) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `Invalid storage class for provider "${provider}". Allowed values: ${supportedStorageClasses.join(", ")}.`,
+		});
+	}
+};
+
 export const backupRouter = createTRPCRouter({
 	create: protectedProcedure
 		.input(apiCreateBackup)
 		.mutation(async ({ input }) => {
 			try {
+				await validateStorageClassForDestination({
+					destinationId: input.destinationId,
+					storageClass: input.storageClass,
+				});
+
 				const newBackup = await createBackup(input);
 
 				const backup = await findBackupById(newBackup.backupId);
@@ -132,6 +172,11 @@ export const backupRouter = createTRPCRouter({
 		.input(apiUpdateBackup)
 		.mutation(async ({ input }) => {
 			try {
+				await validateStorageClassForDestination({
+					destinationId: input.destinationId,
+					storageClass: input.storageClass,
+				});
+
 				await updateBackupById(input.backupId, input);
 				const backup = await findBackupById(input.backupId);
 

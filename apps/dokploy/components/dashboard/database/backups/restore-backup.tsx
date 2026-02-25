@@ -503,6 +503,9 @@ export const RestoreBackup = ({
 																			<span>
 																				Size: {formatBytes(file.Size)}
 																			</span>
+																			{file.Tier && (
+																				<span>Tier: {file.Tier}</span>
+																			)}
 																			{file.IsDir && (
 																				<span className="text-blue-500">
 																					Directory

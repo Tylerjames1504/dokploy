@@ -62,6 +62,7 @@ import {
 import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
 import { ScheduleFormField } from "../../application/schedules/handle-schedules";
+import { getS3StorageClassOptionsByProvider } from "./constants";
 
 type CacheType = "cache" | "fetch";
 
@@ -106,6 +107,7 @@ const Schema = z
 					.optional(),
 			})
 			.optional(),
+		storageClass: z.string().optional(),
 	})
 	.superRefine((data, ctx) => {
 		if (data.backupType === "compose" && !data.databaseType) {
@@ -219,9 +221,25 @@ export const HandleBackup = ({
 			databaseType: backupType === "compose" ? undefined : databaseType,
 			backupType: backupType,
 			metadata: {},
+			storageClass: "",
 		},
 		resolver: zodResolver(Schema),
 	});
+
+	const selectedDestinationId = form.watch("destinationId");
+	const selectedStorageClass = form.watch("storageClass");
+	const selectedDestination = data?.find(
+		(destination) => destination.destinationId === selectedDestinationId,
+	);
+	const selectedProvider = selectedDestination?.provider;
+	const storageClassOptions = getS3StorageClassOptionsByProvider(selectedProvider);
+	const hasStorageClassSupport = storageClassOptions.length > 0;
+
+	useEffect(() => {
+		if (selectedStorageClass && !storageClassOptions.includes(selectedStorageClass)) {
+			form.setValue("storageClass", "");
+		}
+	}, [form, selectedStorageClass, storageClassOptions]);
 
 	const {
 		data: services,
@@ -256,6 +274,7 @@ export const HandleBackup = ({
 			databaseType: backup?.databaseType ?? databaseType,
 			backupType: backup?.backupType ?? backupType,
 			metadata: backup?.metadata ?? {},
+			storageClass: backup?.storageClass ?? "",
 		});
 	}, [form, form.reset, backupId, backup]);
 
@@ -300,6 +319,7 @@ export const HandleBackup = ({
 			backupId: backupId ?? "",
 			backupType,
 			metadata: data.metadata,
+			storageClass: data.storageClass?.trim() || undefined,
 		})
 			.then(async () => {
 				toast.success(`Backup ${backupId ? "Updated" : "Created"}`);
@@ -451,6 +471,57 @@ export const HandleBackup = ({
 											</PopoverContent>
 										</Popover>
 
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="storageClass"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Storage Class</FormLabel>
+										<FormControl>
+											<Select
+												onValueChange={(value) =>
+													field.onChange(value === "__DEFAULT__" ? "" : value)
+												}
+												defaultValue={field.value || "__DEFAULT__"}
+												value={field.value || "__DEFAULT__"}
+												disabled={!selectedDestination || !hasStorageClassSupport}
+											>
+												<SelectTrigger>
+													<SelectValue
+														placeholder={
+															!selectedDestination
+																? "Select destination first"
+																: hasStorageClassSupport
+																	? "Use destination default"
+																	: "Not supported for this provider"
+														}
+													/>
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="__DEFAULT__">
+														Use destination default
+													</SelectItem>
+													{storageClassOptions.map((storageClassOption) => (
+														<SelectItem
+															key={storageClassOption}
+															value={storageClassOption}
+														>
+															{storageClassOption}
+														</SelectItem>
+													))}
+												</SelectContent>
+											</Select>
+										</FormControl>
+										{selectedDestination && !hasStorageClassSupport && (
+											<FormDescription>
+												This destination provider does not support explicit
+												storage-class overrides.
+											</FormDescription>
+										)}
 										<FormMessage />
 									</FormItem>
 								)}
