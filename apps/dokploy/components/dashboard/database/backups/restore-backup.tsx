@@ -1,13 +1,14 @@
-import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
-import { useMutation } from "@tanstack/react-query";
+import { zodResolver } from "@hookform/resolvers/zod";
 import copy from "copy-to-clipboard";
-import _ from "lodash";
+import debounce from "lodash/debounce";
 import {
+	Archive,
 	CheckIcon,
 	ChevronsUpDown,
+	CloudCog,
 	Copy,
 	DatabaseZap,
-	InfoIcon,
+	Info,
 	RefreshCw,
 	RotateCcw,
 } from "lucide-react";
@@ -16,8 +17,16 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 import { DrawerLogs } from "@/components/shared/drawer-logs";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
 import {
 	Command,
 	CommandEmpty,
@@ -66,6 +75,7 @@ import { cn } from "@/lib/utils";
 import { api, type RouterOutputs } from "@/utils/api";
 import type { ServiceType } from "../../application/advanced/show-resources";
 import { type LogLine, parseLogs } from "../../docker/logs/utils";
+import { getS3StorageClassLabel } from "./constants";
 
 type DatabaseType =
 	| Exclude<ServiceType, "application" | "redis">
@@ -87,14 +97,14 @@ type BackupFileListItem = RouterOutputs["backup"]["listBackupFiles"][number] & {
 const RestoreBackupSchema = z
 	.object({
 		destinationId: z.string().min(1, {
-			message: "Destination is required",
-		}),
+				message: "Destination is required",
+			}),
 		backupFile: z.string().min(1, {
-			message: "Backup file is required",
-		}),
+				message: "Backup file is required",
+			}),
 		databaseName: z.string().min(1, {
-			message: "Database name is required",
-		}),
+				message: "Database name is required",
+			}),
 		databaseType: z
 			.enum(["postgres", "mariadb", "mysql", "mongo", "web-server"])
 			.optional(),
@@ -203,19 +213,39 @@ export const formatBytes = (bytes: number): string => {
 	return `${Number.parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
 };
 
+const badgeNonInteractiveClass = "pointer-events-none cursor-default";
+const readableUntilClass =
+	"inline-flex rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-700 dark:text-emerald-300";
+
 const getAvailabilityBadge = (
 	availability?: "ready" | "restoring" | "archived" | "unknown",
 ) => {
 	if (availability === "ready") {
-		return <Badge variant="default">Ready</Badge>;
+		return (
+			<Badge variant="default" className={badgeNonInteractiveClass}>
+				Ready
+			</Badge>
+		);
 	}
 	if (availability === "restoring") {
-		return <Badge variant="secondary">Restoring</Badge>;
+		return (
+			<Badge variant="secondary" className={badgeNonInteractiveClass}>
+				Restoring
+			</Badge>
+		);
 	}
 	if (availability === "archived") {
-		return <Badge variant="destructive">Archived</Badge>;
+		return (
+			<Badge variant="destructive" className={badgeNonInteractiveClass}>
+				Archived
+			</Badge>
+		);
 	}
-	return <Badge variant="outline">Unknown</Badge>;
+	return (
+		<Badge variant="outline" className={badgeNonInteractiveClass}>
+			Unknown
+		</Badge>
+	);
 };
 
 export const RestoreBackup = ({
@@ -224,13 +254,16 @@ export const RestoreBackup = ({
 	serverId,
 	backupType = "database",
 }: Props) => {
+	type RestoreBackupFormInput = z.input<typeof RestoreBackupSchema>;
+	type RestoreBackupFormOutput = z.output<typeof RestoreBackupSchema>;
+
 	const [isOpen, setIsOpen] = useState(false);
 	const [search, setSearch] = useState("");
 	const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
 
 	const { data: destinations = [] } = api.destination.all.useQuery();
 
-	const form = useForm({
+	const form = useForm<RestoreBackupFormInput, unknown, RestoreBackupFormOutput>({
 		defaultValues: {
 			destinationId: "",
 			backupFile: "",
@@ -247,7 +280,7 @@ export const RestoreBackup = ({
 	const currentDatabaseType = form.watch("databaseType");
 	const metadata = form.watch("metadata");
 
-	const debouncedSetSearch = _.debounce((value: string) => {
+	const debouncedSetSearch = debounce((value: string) => {
 		setDebouncedSearchTerm(value);
 	}, 350);
 
@@ -258,7 +291,7 @@ export const RestoreBackup = ({
 
 	const {
 		data: filesData = [],
-		isPending: isLoading,
+		isLoading,
 		refetch: refetchFiles,
 	} = api.backup.listBackupFiles.useQuery(
 		{
@@ -310,29 +343,19 @@ export const RestoreBackup = ({
 		},
 	);
 
-	const trpcUtils = api.useUtils();
-	const requestArchiveRestore = useMutation({
-		mutationFn: (input: {
-			destinationId: string;
-			backupFile: string;
-			retrievalTier: "standard" | "priority" | "bulk";
-			lifetimeDays: number;
-			serverId?: string;
-		}) =>
-			trpcUtils.client.mutation(
-				"backup.requestBackupFileRestore" as never,
-				input as never,
-			),
-		onSuccess(data) {
-			toast.success((data as { message?: string })?.message ?? "Restore requested.");
-			void refetchFiles();
+	const requestArchiveRestore = api.backup.requestBackupFileRestore.useMutation(
+		{
+			onSuccess(data) {
+				toast.success(data.message);
+				void refetchFiles();
+			},
+			onError(error) {
+				toast.error(error.message);
+			},
 		},
-		onError(error) {
-			toast.error(error instanceof Error ? error.message : "Failed to request restore");
-		},
-	});
+	);
 
-	const onSubmit = async (data: z.infer<typeof RestoreBackupSchema>) => {
+	const onSubmit = async (data: RestoreBackupFormOutput) => {
 		if (backupType === "compose" && !data.databaseType) {
 			toast.error("Please select a database type");
 			return;
@@ -364,7 +387,7 @@ export const RestoreBackup = ({
 	const isSelectedFileRestorable =
 		selectedFile && !selectedFile.IsDir
 			? selectedFile.RestoreAvailability === "ready" ||
-				selectedFile.RestoreAvailability === "unknown"
+			selectedFile.RestoreAvailability === "unknown"
 			: true;
 
 	return (
@@ -375,14 +398,15 @@ export const RestoreBackup = ({
 					Restore Backup
 				</Button>
 			</DialogTrigger>
-			<DialogContent className="sm:max-w-lg">
+			<DialogContent className="sm:max-w-xl">
 				<DialogHeader>
 					<DialogTitle className="flex items-center">
 						<RotateCcw className="mr-2 size-4" />
 						Restore Backup
 					</DialogTitle>
 					<DialogDescription>
-						Select a destination and search for backup files
+						Choose a backup from your destination, then restore it into this
+						database.
 					</DialogDescription>
 				</DialogHeader>
 
@@ -410,8 +434,8 @@ export const RestoreBackup = ({
 												>
 													{field.value
 														? destinations.find(
-																(d) => d.destinationId === field.value,
-															)?.name
+															(d) => d.destinationId === field.value,
+														)?.name
 														: "Select Destination"}
 													<ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
 												</Button>
@@ -505,7 +529,7 @@ export const RestoreBackup = ({
 													onValueChange={handleSearchChange}
 													className="h-9"
 												/>
-												{isPending ? (
+												{isLoading ? (
 													<div className="py-6 text-center text-sm">
 														Loading backup files...
 													</div>
@@ -536,48 +560,48 @@ export const RestoreBackup = ({
 																	}}
 																>
 																	<div className="flex w-full flex-col gap-1">
-																		<div className="flex w-full justify-between">
-																			<span className="font-medium">
+																		<div className="flex w-full justify-between items-center">
+																			<span className="font-medium truncate min-w-0">
 																				{file.Path}
 																			</span>
-
 																			<CheckIcon
 																				className={cn(
-																					"ml-auto h-4 w-4",
+																					"ml-2 h-4 w-4 shrink-0",
 																					file.Path === field.value
 																						? "opacity-100"
 																						: "opacity-0",
 																				)}
 																			/>
 																		</div>
-																		<div className="flex items-center gap-4 text-xs text-muted-foreground">
-																			<span>
-																				Size: {formatBytes(file.Size)}
+																		<div className="flex w-full items-center gap-x-4 text-xs text-muted-foreground min-w-0">
+																			<span className="shrink-0">Size: {formatBytes(file.Size)}</span>
+																			{(file.StorageClass || file.Tier) && (
+																				<span className="shrink-0">
+																					Class:{" "}
+																					{getS3StorageClassLabel(
+																						(file.StorageClass || file.Tier) ?? "",
+																					)}
+																				</span>
+																			)}
+																			<span className="ml-auto shrink-0">
+																				{!file.IsDir
+																					? getAvailabilityBadge(file.RestoreAvailability)
+																					: <span className="text-blue-500">Directory</span>}
 																			</span>
-																			{file.Tier && (
-																				<span>Class: {file.Tier}</span>
-																			)}
-																			{!file.IsDir &&
-																				getAvailabilityBadge(
-																					file.RestoreAvailability,
-																				)}
-																			{file.IsDir && (
-																				<span className="text-blue-500">
-																					Directory
-																				</span>
-																			)}
-																			{file.Hashes?.MD5 && (
-																				<span>MD5: {file.Hashes.MD5}</span>
-																			)}
-																			{file.RestoreExpiryDate && (
-																				<span>
-																					Readable until:{" "}
-																					{new Date(
-																						file.RestoreExpiryDate,
-																					).toLocaleString()}
-																				</span>
-																			)}
 																		</div>
+																		{(file.Hashes?.MD5 || file.RestoreExpiryDate) && (
+																			<div className="flex flex-wrap items-center gap-x-4 text-xs text-muted-foreground">
+																				{file.Hashes?.MD5 && (
+																					<span>MD5: {file.Hashes.MD5}</span>
+																				)}
+																				{file.RestoreExpiryDate && (
+																					<span className={readableUntilClass}>
+																						Readable until:{" "}
+																						{new Date(file.RestoreExpiryDate).toLocaleString()}
+																					</span>
+																				)}
+																			</div>
+																		)}
 																	</div>
 																</CommandItem>
 															))}
@@ -591,6 +615,144 @@ export const RestoreBackup = ({
 								</FormItem>
 							)}
 						/>
+
+						{selectedFile && !selectedFile.IsDir && (
+							<Card className="border-muted/60">
+								<CardHeader className="py-3">
+									<CardTitle className="text-sm font-medium">
+										Selected backup
+									</CardTitle>
+									<CardDescription className="text-xs">
+										{selectedFile.Path}
+									</CardDescription>
+								</CardHeader>
+								<CardContent className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-0 text-xs text-muted-foreground">
+									<span>Size: {formatBytes(selectedFile.Size)}</span>
+									{(selectedFile.StorageClass || selectedFile.Tier) && (
+										<span>
+											Class:{" "}
+											{getS3StorageClassLabel(
+												(selectedFile.StorageClass || selectedFile.Tier) ?? "",
+											)}
+										</span>
+									)}
+									{getAvailabilityBadge(selectedFile.RestoreAvailability)}
+									{selectedFile.RestoreExpiryDate && (
+										<span className={readableUntilClass}>
+											Readable until:{" "}
+											{new Date(selectedFile.RestoreExpiryDate).toLocaleString()}
+										</span>
+									)}
+								</CardContent>
+							</Card>
+						)}
+
+						{selectedFile?.RestoreAvailability === "archived" && (
+							<Card className="border-amber-500/40 bg-amber-500/5 dark:border-amber-400/30 dark:bg-amber-400/10">
+								<CardHeader className="pb-2">
+									<CardTitle className="flex items-center gap-2 text-sm font-medium">
+										<Archive className="size-4 text-amber-600 dark:text-amber-400" />
+										Restore from archive (AWS)
+									</CardTitle>
+									<CardDescription className="text-xs">
+										This backup is in cold storage (e.g. Glacier). Request a
+										temporary restore so it can be downloaded. Retrieval
+										typically takes 3-12 hours for Standard, or 1-5 minutes for
+										Expedited.
+									</CardDescription>
+								</CardHeader>
+								<CardContent className="space-y-3 pt-0">
+									<div className="flex flex-col gap-3">
+										<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+											<div className="space-y-1.5">
+												<label className="text-xs font-medium text-muted-foreground">
+													Retrieval tier
+												</label>
+												<Select
+													value={archiveRetrievalTier}
+													onValueChange={(value: "standard" | "priority" | "bulk") =>
+														setArchiveRetrievalTier(value)
+													}
+												>
+													<SelectTrigger className="h-9 w-full min-w-[10rem] sm:w-56">
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="standard">
+															Standard (3-5 hours, lower cost)
+														</SelectItem>
+														<SelectItem value="priority">
+															Expedited (1-5 minutes)
+														</SelectItem>
+														<SelectItem value="bulk">
+															Bulk (5-12 hours, lowest cost)
+														</SelectItem>
+													</SelectContent>
+												</Select>
+											</div>
+											<div className="space-y-1.5">
+												<label className="text-xs font-medium text-muted-foreground">
+													Restore duration
+												</label>
+												<Select
+													value={archiveLifetimeDays}
+													onValueChange={setArchiveLifetimeDays}
+												>
+													<SelectTrigger className="h-9 w-full min-w-[8rem] sm:w-32">
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="1">1 day</SelectItem>
+														<SelectItem value="3">3 days</SelectItem>
+														<SelectItem value="7">7 days</SelectItem>
+														<SelectItem value="14">14 days</SelectItem>
+														<SelectItem value="30">30 days</SelectItem>
+													</SelectContent>
+												</Select>
+											</div>
+										</div>
+										<Button
+											type="button"
+											className="w-full sm:w-fit"
+											isLoading={requestArchiveRestore.isPending}
+											onClick={() => {
+												if (!selectedFile) return;
+												requestArchiveRestore.mutate({
+													destinationId: form.watch("destinationId"),
+													backupFile: selectedFile.Path,
+													retrievalTier: archiveRetrievalTier,
+													lifetimeDays: Number.parseInt(archiveLifetimeDays, 10),
+													serverId: serverId ?? undefined,
+												});
+											}}
+										>
+											<CloudCog className="mr-2 size-4" />
+											Request restore from AWS
+										</Button>
+									</div>
+									<p className="text-xs text-muted-foreground">
+										After the request completes, the file will be available for
+										download. You can then run the restore above when it shows
+										Ready.
+									</p>
+								</CardContent>
+							</Card>
+						)}
+
+						{selectedFile?.RestoreAvailability === "restoring" && (
+							<Alert className="border-blue-500/40 bg-blue-500/5 dark:border-blue-400/30 dark:bg-blue-400/10">
+								<Info className="size-4 text-blue-600 dark:text-blue-400" />
+								<AlertTitle className="text-sm">
+									Restore from archive in progress
+								</AlertTitle>
+								<AlertDescription className="text-xs">
+									This backup is being restored from cold storage. It usually
+									takes a few hours. You can close this dialog and come back
+									later—when the backup shows Ready, you can run the restore.
+								</AlertDescription>
+							</Alert>
+						)}
+
 						<FormField
 							control={form.control}
 							name="databaseName"
@@ -868,89 +1030,6 @@ export const RestoreBackup = ({
 								Restore
 							</Button>
 						</DialogFooter>
-						{selectedFile?.RestoreAvailability === "archived" && (
-							<div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
-								<div className="mb-2 flex items-center gap-1 text-xs font-medium text-destructive">
-									<span>Archived backup file</span>
-									<TooltipProvider>
-										<Tooltip delayDuration={0}>
-											<TooltipTrigger>
-												<InfoIcon className="h-4 w-4 text-muted-foreground" />
-											</TooltipTrigger>
-											<TooltipContent className="max-w-xs">
-												This backup is in archive storage and cannot be
-												downloaded until restore is requested. Retrieval speed:
-												Standard is typical, Priority is fastest, Bulk is
-												lowest-cost but slowest. Lifetime controls how long the
-												object stays readable after restore completes.
-											</TooltipContent>
-										</Tooltip>
-									</TooltipProvider>
-								</div>
-								<p className="mb-2 text-xs text-muted-foreground">
-									Request restore to make this backup temporarily readable.
-								</p>
-								<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-									<Select
-										value={archiveRetrievalTier}
-										onValueChange={(value: "standard" | "priority" | "bulk") =>
-											setArchiveRetrievalTier(value)
-										}
-									>
-										<SelectTrigger className="h-8 w-full sm:w-36">
-											<SelectValue />
-										</SelectTrigger>
-										<SelectContent>
-											<SelectItem value="standard">Standard</SelectItem>
-											<SelectItem value="priority">Priority</SelectItem>
-											<SelectItem value="bulk">Bulk</SelectItem>
-										</SelectContent>
-									</Select>
-									<Select
-										value={archiveLifetimeDays}
-										onValueChange={setArchiveLifetimeDays}
-									>
-										<SelectTrigger className="h-8 w-full sm:w-32">
-											<SelectValue />
-										</SelectTrigger>
-										<SelectContent>
-											<SelectItem value="1">1 day</SelectItem>
-											<SelectItem value="3">3 days</SelectItem>
-											<SelectItem value="7">7 days</SelectItem>
-											<SelectItem value="14">14 days</SelectItem>
-											<SelectItem value="30">30 days</SelectItem>
-										</SelectContent>
-									</Select>
-									<Button
-										type="button"
-										variant="secondary"
-										className="h-8 sm:w-auto"
-										isLoading={requestArchiveRestore.isPending}
-										onClick={() => {
-											if (!selectedFile) return;
-											requestArchiveRestore.mutate({
-												destinationId: form.watch("destinationId"),
-												backupFile: selectedFile.Path,
-												retrievalTier: archiveRetrievalTier,
-												lifetimeDays: Number.parseInt(archiveLifetimeDays, 10),
-												serverId: serverId ?? undefined,
-											});
-										}}
-									>
-										Request Restore
-									</Button>
-								</div>
-								<p className="mt-2 text-xs text-destructive">
-									This object is archived and not readable yet.
-								</p>
-							</div>
-						)}
-						{selectedFile?.RestoreAvailability === "restoring" && (
-							<p className="text-xs text-muted-foreground">
-								This backup is being restored from archive and is not readable
-								yet.
-							</p>
-						)}
 					</form>
 				</Form>
 

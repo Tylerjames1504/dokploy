@@ -137,7 +137,7 @@ const createSchema = createInsertSchema(backups, {
 	prefix: z.string().min(1),
 	database: z.string().min(1),
 	schedule: z.string(),
-	keepLatestCount: z.number().optional(),
+	keepLatestCount: z.number().nullable().optional(),
 	databaseType: z.enum(["postgres", "mariadb", "mysql", "mongo", "web-server"]),
 	postgresId: z.string().optional(),
 	mariadbId: z.string().optional(),
@@ -194,7 +194,10 @@ export const apiUpdateBackup = createSchema
 	})
 	.required()
 	.extend({
-		storageClass: z.string().optional(),
+		keepLatestCount: z.number().nullable().optional(),
+		serviceName: z.string().nullable().optional(),
+		metadata: z.any().optional(),
+		storageClass: z.string().nullable().optional(),
 	});
 
 export const apiRestoreBackup = z.object({

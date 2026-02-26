@@ -25,7 +25,7 @@ export const S3_PROVIDER_STORAGE_CLASS_OPTIONS: Readonly<
 
 export const normalizeS3StorageClass = (storageClass?: string | null) => {
 	const normalized = storageClass?.trim();
-	return normalized ? normalized : undefined;
+	return normalized ? normalized.toUpperCase() : undefined;
 };
 
 export const getS3StorageClassesForProvider = (provider?: string | null) => {

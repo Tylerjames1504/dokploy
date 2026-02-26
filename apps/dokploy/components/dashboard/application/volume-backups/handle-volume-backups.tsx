@@ -40,7 +40,10 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
-import { getS3StorageClassOptionsByProvider } from "../../database/backups/constants";
+import {
+	getS3StorageClassLabel,
+	getS3StorageClassOptionsByProvider,
+} from "../../database/backups/constants";
 import type { CacheType } from "../domains/handle-domain";
 import { ScheduleFormField } from "../schedules/handle-schedules";
 
@@ -230,7 +233,11 @@ export const HandleVolumeBackups = ({
 			destinationId: values.destinationId,
 			volumeBackupId: volumeBackupId || "",
 			serviceType: volumeBackupType,
-			storageClass: values.storageClass?.trim() || undefined,
+			storageClass: values.storageClass?.trim()
+				? values.storageClass.trim()
+				: volumeBackupId
+					? null
+					: undefined,
 			...(volumeBackupType === "application" && {
 				applicationId: id || "",
 			}),
@@ -364,54 +371,48 @@ export const HandleVolumeBackups = ({
 								</FormItem>
 							)}
 						/>
-						<FormField
-							control={form.control}
-							name="storageClass"
-							render={({ field }) => (
-								<FormItem>
-									<FormLabel>Storage Class</FormLabel>
-									<Select
-										onValueChange={(value) =>
-											field.onChange(value === "__DEFAULT__" ? "" : value)
-										}
-										value={field.value || "__DEFAULT__"}
-										defaultValue={field.value || "__DEFAULT__"}
-										disabled={!selectedDestination || !hasStorageClassSupport}
-									>
-										<FormControl>
-											<SelectTrigger>
-												<SelectValue
-													placeholder={
-														!selectedDestination
-															? "Select destination first"
-															: hasStorageClassSupport
-																? "Use destination default"
-																: "Not supported for this provider"
-													}
-												/>
-											</SelectTrigger>
-										</FormControl>
-										<SelectContent>
-											<SelectItem value="__DEFAULT__">
-												Use destination default
-											</SelectItem>
-											{storageClassOptions.map((option) => (
-												<SelectItem key={option} value={option}>
-													{option}
+						{hasStorageClassSupport && (
+							<FormField
+								control={form.control}
+								name="storageClass"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Storage Class</FormLabel>
+										<Select
+											onValueChange={(value) =>
+												field.onChange(value === "__DEFAULT__" ? "" : value)
+											}
+											value={field.value || "__DEFAULT__"}
+											defaultValue={field.value || "__DEFAULT__"}
+											disabled={!selectedDestination}
+										>
+											<FormControl>
+												<SelectTrigger>
+													<SelectValue
+														placeholder={
+															!selectedDestination
+																? "Select destination first"
+																: "Use destination default"
+														}
+													/>
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												<SelectItem value="__DEFAULT__">
+													Use destination default
 												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
-									{selectedDestination && !hasStorageClassSupport && (
-										<FormDescription>
-											This destination provider does not support explicit
-											storage-class overrides.
-										</FormDescription>
-									)}
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
+												{storageClassOptions.map((option) => (
+													<SelectItem key={option} value={option}>
+														{getS3StorageClassLabel(option)}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						)}
 						{serviceTypeForm === "compose" && (
 							<>
 								<div className="flex flex-col w-full gap-4">

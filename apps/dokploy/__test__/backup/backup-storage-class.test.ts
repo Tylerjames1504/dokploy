@@ -49,6 +49,21 @@ describe("backup schema storage class field", () => {
 
 		expect(parsed.success).toBe(true);
 	});
+
+	it("allows update payload with null storage class for reset", () => {
+		const parsed = apiUpdateBackup.safeParse({
+			backupId: "backup-id",
+			schedule: "0 0 * * *",
+			enabled: true,
+			prefix: "/",
+			destinationId: "destination-id",
+			database: "dokploy",
+			databaseType: "web-server",
+			storageClass: null,
+		});
+
+		expect(parsed.success).toBe(true);
+	});
 });
 
 describe("getS3Credentials backup storage class override", () => {
@@ -59,6 +74,13 @@ describe("getS3Credentials backup storage class override", () => {
 
 	it("does not add storage class flag when override is invalid", () => {
 		const flags = getS3Credentials(destination, "INVALID");
+		expect(flags.some((flag) => flag.includes("--s3-storage-class"))).toBe(
+			false,
+		);
+	});
+
+	it("does not add storage class flag when override is whitespace", () => {
+		const flags = getS3Credentials(destination, "   ");
 		expect(flags.some((flag) => flag.includes("--s3-storage-class"))).toBe(
 			false,
 		);

@@ -62,7 +62,10 @@ import {
 import { cn } from "@/lib/utils";
 import { api } from "@/utils/api";
 import { ScheduleFormField } from "../../application/schedules/handle-schedules";
-import { getS3StorageClassOptionsByProvider } from "./constants";
+import {
+	getS3StorageClassLabel,
+	getS3StorageClassOptionsByProvider,
+} from "./constants";
 
 type CacheType = "cache" | "fetch";
 
@@ -319,7 +322,11 @@ export const HandleBackup = ({
 			backupId: backupId ?? "",
 			backupType,
 			metadata: data.metadata,
-			storageClass: data.storageClass?.trim() || undefined,
+			storageClass: data.storageClass?.trim()
+				? data.storageClass.trim()
+				: backupId
+					? null
+					: undefined,
 		})
 			.then(async () => {
 				toast.success(`Backup ${backupId ? "Updated" : "Created"}`);
@@ -475,57 +482,51 @@ export const HandleBackup = ({
 									</FormItem>
 								)}
 							/>
-							<FormField
-								control={form.control}
-								name="storageClass"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>Storage Class</FormLabel>
-										<FormControl>
-											<Select
-												onValueChange={(value) =>
-													field.onChange(value === "__DEFAULT__" ? "" : value)
-												}
-												defaultValue={field.value || "__DEFAULT__"}
-												value={field.value || "__DEFAULT__"}
-												disabled={!selectedDestination || !hasStorageClassSupport}
-											>
-												<SelectTrigger>
-													<SelectValue
-														placeholder={
-															!selectedDestination
-																? "Select destination first"
-																: hasStorageClassSupport
-																	? "Use destination default"
-																	: "Not supported for this provider"
-														}
-													/>
-												</SelectTrigger>
-												<SelectContent>
-													<SelectItem value="__DEFAULT__">
-														Use destination default
-													</SelectItem>
-													{storageClassOptions.map((storageClassOption) => (
-														<SelectItem
-															key={storageClassOption}
-															value={storageClassOption}
-														>
-															{storageClassOption}
+							{hasStorageClassSupport && (
+								<FormField
+									control={form.control}
+									name="storageClass"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Storage Class</FormLabel>
+											<FormControl>
+												<Select
+													onValueChange={(value) =>
+														field.onChange(value === "__DEFAULT__" ? "" : value)
+													}
+													defaultValue={field.value || "__DEFAULT__"}
+													value={field.value || "__DEFAULT__"}
+													disabled={!selectedDestination}
+												>
+													<SelectTrigger>
+														<SelectValue
+															placeholder={
+																!selectedDestination
+																	? "Select destination first"
+																	: "Use destination default"
+															}
+														/>
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="__DEFAULT__">
+															Use destination default
 														</SelectItem>
-													))}
-												</SelectContent>
-											</Select>
-										</FormControl>
-										{selectedDestination && !hasStorageClassSupport && (
-											<FormDescription>
-												This destination provider does not support explicit
-												storage-class overrides.
-											</FormDescription>
-										)}
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
+														{storageClassOptions.map((storageClassOption) => (
+															<SelectItem
+																key={storageClassOption}
+																value={storageClassOption}
+															>
+																{getS3StorageClassLabel(storageClassOption)}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+							)}
 							{backupType === "compose" && (
 								<div className="flex flex-row items-end w-full gap-4">
 									<FormField

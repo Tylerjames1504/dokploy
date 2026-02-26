@@ -101,6 +101,9 @@ const ARCHIVE_RESTORE_PRIORITY_MAP = {
 	bulk: "Bulk",
 } as const;
 
+const shEscape = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+const GLOB_PATTERN_CHARS = /[*?\[\]{}]/;
+
 const validateStorageClassForDestination = async ({
 	destinationId,
 	storageClass,
@@ -449,6 +452,7 @@ export const backupRouter = createTRPCRouter({
 
 				// Limit to first 100 files
 
+				const normalizedBaseDir = baseDir.replace(/\/$/, "");
 				const results = (baseDir
 					? files.map((file) => ({
 							...file,
@@ -456,12 +460,16 @@ export const backupRouter = createTRPCRouter({
 						}))
 					: files
 				).map((file) => {
-					const relativePath = baseDir
-						? file.Path.slice(baseDir.length)
-						: file.Path;
-					const normalizedRelativePath = relativePath.replace(/\/$/, "");
-					const restoreStatus = restoreStatusMap.get(normalizedRelativePath);
-					const storageClass = file.Tier || file.StorageClass || restoreStatus?.StorageClass;
+					const normalizedRemotePath = file.Path.replace(/^\/+/, "").replace(/\/$/, "");
+					const relativeRemotePath =
+						normalizedBaseDir && normalizedRemotePath.startsWith(`${normalizedBaseDir}/`)
+							? normalizedRemotePath.slice(normalizedBaseDir.length + 1)
+							: normalizedRemotePath;
+					const restoreStatus =
+						restoreStatusMap.get(normalizedRemotePath) ||
+						restoreStatusMap.get(relativeRemotePath);
+					const storageClass =
+						file.StorageClass || restoreStatus?.StorageClass || file.Tier;
 					const isArchive = isArchiveStorageClass(storageClass);
 					const inProgress =
 						restoreStatus?.RestoreStatus?.IsRestoreInProgress === true;
@@ -526,7 +534,7 @@ export const backupRouter = createTRPCRouter({
 				const destination = await findDestinationById(input.destinationId);
 				const rcloneFlags = getS3Credentials(destination);
 				const bucketPath = `:s3:${destination.bucket}`;
-				const normalizedPath = input.backupFile.replace(/^\/+/, "");
+				const normalizedPath = input.backupFile.trim().replace(/^\/+/, "");
 
 				if (normalizedPath.endsWith("/")) {
 					throw new TRPCError({
@@ -535,14 +543,23 @@ export const backupRouter = createTRPCRouter({
 					});
 				}
 
-				const lastSlashIndex = normalizedPath.lastIndexOf("/");
-				const parentDirectory =
-					lastSlashIndex === -1 ? "" : normalizedPath.slice(0, lastSlashIndex + 1);
-				const restoreTarget = parentDirectory
-					? `${bucketPath}/${normalizeS3Path(parentDirectory)}`
-					: bucketPath;
+				if (!normalizedPath) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Please select a valid backup file path.",
+					});
+				}
+
+				if (GLOB_PATTERN_CHARS.test(normalizedPath)) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message:
+							"Backup file path must be a literal object key and cannot contain wildcard characters.",
+					});
+				}
+
 				const priority = ARCHIVE_RESTORE_PRIORITY_MAP[input.retrievalTier];
-				const restoreCommand = `rclone backend restore ${rcloneFlags.join(" ")} "${restoreTarget}" -o priority=${priority} -o lifetime=${input.lifetimeDays}`;
+				const restoreCommand = `rclone backend restore ${rcloneFlags.join(" ")} --include ${shEscape(normalizedPath)} ${shEscape(bucketPath)} -o priority=${priority} -o lifetime=${input.lifetimeDays}`;
 
 				if (input.serverId) {
 					await execAsyncRemote(input.serverId, restoreCommand);
@@ -552,7 +569,7 @@ export const backupRouter = createTRPCRouter({
 
 				return {
 					success: true,
-					message: `Archive restore requested for directory with ${input.retrievalTier} priority.`,
+					message: `Archive restore requested for the selected file with ${input.retrievalTier} priority.`,
 				};
 			} catch (error) {
 				throw new TRPCError({
